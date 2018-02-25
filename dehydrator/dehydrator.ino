@@ -19,9 +19,10 @@
 #define TC_OUT_MAX  220       // Maximum Value is longest delay from Zero crossing - "3% AC Phase" Control.
 #define TEMP_MIN    35
 #define TEMP_MAX    75
-#define ds_json_tag   "ds18b20" 
+#define ds_json_tag   "temperature" 
 #define sht15_temp_tag  "temperature"
 #define sht15_rh_tag    "humidity"
+#define STATUS_TAG    "state"
 
 #define VER   9
 
@@ -46,7 +47,7 @@ float humidity = 0;
 bool notify = false;
 unsigned long lastTempUpdate = millis();
 unsigned long lastRHUpdate = millis();
-unsigned long notify_time = 2000;
+unsigned long notify_time = 10000;      // 10 seconds -  this might be made configurable
 unsigned long notify_keeper = millis();
 unsigned long sample = 2000;            // take a sample every 2 seconds
 
@@ -56,6 +57,7 @@ boolean unit_on_off = false;           // Initially OFF
 boolean toggle = false;
 boolean valid  = false;
 boolean one_time = false;
+boolean send_ack = false;
 
 String inputString = "";         // a string to hold incoming data
 boolean stringComplete = false;  // whether the string is complete
@@ -73,6 +75,7 @@ PID dehydratorPID(&temperature, &Output, &Setpoint, aggKp, aggKi, aggKd, REVERSE
 
 StaticJsonBuffer<300> jsonBuffer;
 JsonObject& root = jsonBuffer.createObject();
+JsonObject& reported = jsonBuffer.createObject();
 JsonArray& sht15_array = root.createNestedArray("sht15");
 JsonObject& sht15_json = jsonBuffer.createObject();
 
@@ -107,11 +110,13 @@ void setup(){
     Setpoint = 1.0*cnfData.setpoint;
     digitalWrite(RELAY,LOW);   // Initially ON 
     unit_on_off = true;
-    root["reported"] = "on";
+    reported[STATUS_TAG] = "on";
+    root["setpoint"] = double_with_n_digits(Setpoint, 1);
   }else{
     digitalWrite(RELAY,HIGH);   // Initially OFF   
     unit_on_off = false;
-    root["reported"] = "off";
+    reported[STATUS_TAG] = "off";
+    root["setpoint"] = 0;
   }
   
 
@@ -177,7 +182,6 @@ ISR(TIMER1_OVF_vect){     //timer1 overflow
 }
 
 void loop(){
-  boolean send_ack = false;
   // update DS18B20 Sensor
   handle_dallas(0);
   // update sht15 temperature and humidity sensor
@@ -195,6 +199,7 @@ void loop(){
       cnfData.setpoint = (int)Setpoint;
       saveCfg = true;
       valid = true;
+      root["setpoint"] = double_with_n_digits(Setpoint, 1);
     }else if(sp == 0){
       // do nothing workaround
     }else{
@@ -207,7 +212,7 @@ void loop(){
     
     const char* state = received["state"];
     if(!strcmp(state, "on")){
-      send_ack = true;
+//      send_ack = true;
       if(valid){
         unit_on_off = true;
         digitalWrite(RELAY,LOW);      // set RELAY to ON state
@@ -215,18 +220,18 @@ void loop(){
         // remember we are ON state
         cnfData.state = true;         // next reboot will be ON
         saveCfg = true;
-        root["reported"] = "on";
+        reported[STATUS_TAG] = "on";
       }else{
-        root["reported"] = "off";
+        reported[STATUS_TAG] = "off";
       }
     }else if(!strcmp(state, "off")){
-      send_ack = true;
+//      send_ack = true;
       unit_on_off = false;
       digitalWrite(RELAY,HIGH);     // set RELAY to OFF state
       heater_en = false;
       cnfData.state = false;        // next reboot will be OFF at start
       saveCfg = true;
-      root["reported"] = "off";
+      reported[STATUS_TAG] = "off";
     }else{
       // do nothing
     }
@@ -237,7 +242,9 @@ void loop(){
     // Notifications
     const char* notify_cfg = received["notify"];
     if(!strcmp(notify_cfg, "on")){
+      send_ack = true;
       notify = true;
+      notify_keeper = millis();
     }else if(!strcmp(notify_cfg, "off")){
       notify = false;
     }else{
@@ -284,13 +291,15 @@ void loop(){
     }
   }
   
-  if(notify || send_ack){
+  if(notify){
     if((millis() - notify_keeper > notify_time) || send_ack){
+      root["reported"] = reported;
       // send the json data
       root.printTo(Serial);
       // neccesary to process the message frame
       Serial.println();
       notify_keeper = millis();
+      send_ack = false;
     }
   }
 
@@ -305,7 +314,7 @@ bool handle_dallas(int index){
   if(millis() - lastTempUpdate  > TEMP_READ_DELAY){
     temperature = temperatureSensors.getTempCByIndex(index); //get temp reading
     temperatureF = temperature * 1.8 + 32.0;
-    root[ds_json_tag] = double_with_n_digits(temperature, 1);
+    reported[ds_json_tag] = double_with_n_digits(temperature, 1);
     lastTempUpdate = millis();
     temperatureSensors.setWaitForConversion(false);
     temperatureSensors.requestTemperatures(); //request reading for next time

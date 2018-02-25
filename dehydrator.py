@@ -49,8 +49,13 @@ class ControllerBridge:
         self.conn = None
         self.config = {}
 
+    def clean_conn_obj(self):
+        self.conn = None
+        return
+
     def set_conn_obj(self, conn):
         self.conn = conn
+        return
 
     def set_config_val(self, key, value):
         self.config[key] = value
@@ -61,6 +66,8 @@ class ControllerBridge:
         return
 
     def send_over_ws(self, data):
+        if self.conn is None:
+            return
         self.conn.write(data)
 
     def send_command(self):
@@ -71,23 +78,28 @@ class ControllerBridge:
 
     def process(self, data):
         try:
-            cmd = json.loads(data)
-            if cmd:
-                try:
-                    if "direct-cmd" in cmd:
-                        dircmd = cmd["direct-cmd"]
-                        for command in dircmd:
-                            print("command <%s>,  value: %s" % (command, dircmd[command]))
-                            self.set_config_val(command, dircmd[command])
-                        self.send_command()
-                        self.flush()
+            parsed = data.split('\n')
+            for item in parsed:
+                if len(item) > 0:
+                    cmd = json.loads(item)
+                else:
+                    return
+                if cmd:
+                    try:
+                        if "direct-cmd" in cmd:
+                            dircmd = cmd["direct-cmd"]
+                            for command in dircmd:
+                                print("command <%s>,  value: %s" % (command, dircmd[command]))
+                                self.set_config_val(command, dircmd[command])
+                            self.send_command()
+                            self.flush()
+                            continue
+                    except KeyError:
+                        print("KeyError exception: TCP CMD = %s" % repr(cmd))
                         return
-                except KeyError:
-                    print("KeyError exception: TCP CMD = %s" % repr(cmd))
-                    return
-                except Exception as e:
-                    print("process exception %s" % e)
-                    return
+                    except Exception as e:
+                        print("process exception %s" % e)
+                        return
         except ValueError:
             print("ValueError Exception")
             return
@@ -105,12 +117,6 @@ class DehydratorClient(WebSocketClient):
             msg = msg.decode("utf-8")
             print("DehydratorClient read: %s" % msg)
             self.cntrlBridge.process(msg)
-            # msg = msg.decode("utf-8")
-            # items = msg.split(" ")
-            # cmd = items[0]
-            # if cmd == "Hello":
-            #     self.connection.write(cmd + " World")
-            #     print("Hello World")
         except ClientClosedError:
             self.connection.close()
 
@@ -127,50 +133,38 @@ class DehydratorServer(WebSocketServer):
             print("DehydratorServer exception %s" % e)
         return DehydratorClient(conn, self.cntrlBridge)
 
+    def _cleanup_conn(self):
+        self.cntrlBridge.clean_conn_obj()
+        return
+
 def process_arduino(serialStream, cntrlBridge):
     ''' process incoming data from Arduino '''
     valid = False
-    rcv_json = json.load(serialStream.readUntil(ch = '\n'))
+    try:
+        rcv_json = json.load(serialStream.readUntil(ch = '\n'))
+    except ValueError:
+        return
     if rcv_json:
         try:
-            if "ds18b20" in rcv_json:
-                valid = True
-                # ds_temp = rcv_json["ds18b20"]
-                # data = "ds18b20_temp %s" % ds_temp
-                # print(data)
             try:
                 if "sht15" in rcv_json:
                     if "error" in rcv_json["sht15"][0]:
                         if rcv_json["sht15"][0]["error"] == "noerr":
-                            valid = True
-                            # dht15_temp = rcv_json["sht15"][0]["temperature"]
-                            # dht15_rh = rcv_json["sht15"][0]["humidity"]
-                            # print("sht15 sensor, temp: %s, rh: %s" % (dht15_temp, dht15_rh))
-                        # else:
-                        #     print("sht15 connection problem")                               
-            except:
-                # print("read sht15 json problem")     
+                            valid = True                           
+            except:  
                 pass
             if "reported" in rcv_json:
                 valid = True
-            # try:
-            #     if "output" in rcv_json:
-            #         output = rcv_json["output"]
-            #         print("output: %s" % output)
-            #     if "setpoint" in rcv_json:
-            #         setpoint = rcv_json["setpoint"]
-            #         print("setpoint: %s" % setpoint)
-            # except:
-            #     pass
             if valid:
                 data_json = json.dumps(rcv_json)
+                print(data_json)
                 cntrlBridge.send_over_ws(data_json)
         except KeyError:
             print("KeyError exception: rcv_json = %s" % repr(rcv_json))
             return
 
 def run():
-    print('Dehydrator v10 App Running')
+    print('Dehydrator v1.11 App Running')
     ''' Serial Link Setup '''
     uart = UART(0, 9600)
     uart.init(9600, bits=8, parity=None, stop=1)
